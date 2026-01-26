@@ -35,13 +35,13 @@ def test_motion_start_detection():
         print(f"\n----- Analyzing '{os.path.basename(video_path)}' -----")
         try:
             # We only need the speeds and fps for this test
-            _, left_ankle_speeds, fps = analyze_pitching_motion(video_path)
+            _, all_landmark_speeds, fps = analyze_pitching_motion(video_path)
 
-            if not left_ankle_speeds or not any(s is not None for s in left_ankle_speeds):
+            if not all_landmark_speeds or not any(s is not None for speeds in all_landmark_speeds.values() for s in speeds):
                 print("  -> Could not analyze motion (no speeds detected).")
                 continue
             
-            motion_start_frame = find_motion_start_frame(left_ankle_speeds, fps)
+            motion_start_frame = find_motion_start_frame(all_landmark_speeds, fps)
             # The find_motion_start_frame function already prints debug info.
             # We'll just print a summary line here.
             print(f"  --> Final Detected Motion Start Frame: {motion_start_frame}")
