@@ -1,0 +1,8 @@
+*.mp4
+*.csv
+*.png
+*.mkv
+Old_code/*
+Input_Video/*
+.venv/*
+__pycache__/*
