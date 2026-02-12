@@ -2,7 +2,12 @@
 *.csv
 *.png
 *.mkv
-Old_code/*
-Input_Video/*
 .venv/*
 __pycache__/*
+cuts/*
+Input_Video/*
+Input_without_set/*
+Old_code/*
+Output_Overlay/*
+raw/*
+Test_Video/*
