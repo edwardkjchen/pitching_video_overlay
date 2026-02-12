@@ -9,7 +9,7 @@ import mediapipe as mp
 import pandas as pd
 import os
 
-debug_mode = True
+debug_mode = False
 
 def analyze_pitching_motion(video_path: str):
     """
@@ -45,7 +45,8 @@ def analyze_pitching_motion(video_path: str):
         mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.RIGHT_SHOULDER,
         mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.RIGHT_HIP,
         mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.RIGHT_KNEE,
-        mp_pose.PoseLandmark.LEFT_ANKLE, mp_pose.PoseLandmark.RIGHT_ANKLE
+        mp_pose.PoseLandmark.LEFT_ANKLE, mp_pose.PoseLandmark.RIGHT_ANKLE,
+        mp_pose.PoseLandmark.RIGHT_WRIST
     ]
 
     all_landmark_coords = {lm.name: [] for lm in tracked_landmarks}
@@ -434,8 +435,8 @@ def calculate_scale_ratios(video_path1: str, video_path2: str) -> dict[str, floa
 if __name__ == '__main__':
     # Example of how to use the function.
     # Provide actual video file paths to run this.
-    video1_path = "Input_Video/cutsIMG_2725.mp4"
-    video2_path = "Input_Video/cutsIMG_2726.mp4"
+    video1_path = "Input_Video/cutsIMG_2726.mp4"
+    video2_path = "Input_Video/cutsIMG_2727.mp4"
     
     print("Starting scale alignment process...")
     try:
