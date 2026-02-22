@@ -4,6 +4,7 @@ import os
 import math
 import glob
 from func_tilt_alignment import calculate_tilt_angle_for_video
+from func_tilt_alignment import create_tilted_video
 import pandas as pd
 
 # Define a reasonable tolerance for angle comparison
@@ -22,39 +23,6 @@ def get_all_video_paths():
     if not paths:
         print(f"Error: No .mp4 or .mov videos found in {video_dir}")
     return paths
-
-def create_tilted_video(input_video_path: str, output_video_path: str, angle_degrees: float):
-    """
-    Creates a new video by rotating each frame of the input video by the given angle.
-    """
-    cap = cv2.VideoCapture(input_video_path)
-    if not cap.isOpened():
-        raise IOError(f"Cannot open input video file {input_video_path}")
-
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
-    if not out.isOpened():
-        cap.release()
-        raise IOError(f"Cannot open video writer for {output_video_path}")
-
-    center = (frame_width / 2, frame_height / 2)
-    rotation_matrix = cv2.getRotationMatrix2D(center, angle_degrees, 1.0)
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        rotated_frame = cv2.warpAffine(frame, rotation_matrix, (frame_width, frame_height))
-        out.write(rotated_frame)
-
-    cap.release()
-    out.release()
-    print(f"Created tilted video at: {output_video_path} with {angle_degrees}° tilt.")
 
 def run_tilt_test_for_video(input_video_path: str, results_list: list):
     """

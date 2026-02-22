@@ -3,6 +3,7 @@ import numpy as np
 import mediapipe as mp
 import pandas as pd
 import os
+import shutil
 import math
 
 # Import necessary functions from func_scale_alignment
@@ -142,14 +143,84 @@ def compare_video_tilts(video_path1: str, video_path2: str):
     else:
         print("  Could not calculate the tilt difference due to errors in analyzing one or both videos.")
 
+def create_tilted_video(input_video_path: str, output_video_path: str, angle_degrees: float):
+    """
+    Creates a new video by rotating each frame of the input video by the given angle.
+    """
+    cap = cv2.VideoCapture(input_video_path)
+    if not cap.isOpened():
+        raise IOError(f"Cannot open input video file {input_video_path}")
+
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+    out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
+    if not out.isOpened():
+        cap.release()
+        raise IOError(f"Cannot open video writer for {output_video_path}")
+
+    center = (frame_width / 2, frame_height / 2)
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle_degrees, 1.0)
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        rotated_frame = cv2.warpAffine(frame, rotation_matrix, (frame_width, frame_height))
+        out.write(rotated_frame)
+
+    cap.release()
+    out.release()
+    print(f"Rotated video saved to: {output_video_path} with {angle_degrees}° rotation.")
+
+def tilt_align_videos(video1_path: str, video2_path: str, output_video1_path: str, output_video2_path: str):
+    """
+    Performs tilt alignment between two videos. The second video is rotated
+    to match the tilt angle of the first video. The first video is copied
+    without rotation.
+
+    Args:
+        video1_path (str): Path to the first input video.
+        video2_path (str): Path to the second input video.
+        output_video1_path (str): Path to save the processed first video (copied).
+        output_video2_path (str): Path to save the tilt-aligned second video (rotated).
+    """
+    print(f"\nPerforming tilt alignment for {video1_path} and {video2_path}...")
+
+    tilt1 = calculate_tilt_angle_for_video(video1_path)
+    tilt2 = calculate_tilt_angle_for_video(video2_path)
+
+    if tilt1 is not None and tilt2 is not None:
+        angle_to_rotate_v2 = tilt2 - tilt1
+        print(f"  Video 1 Tilt: {tilt1:.2f}°")
+        print(f"  Video 2 Tilt: {tilt2:.2f}°")
+        print(f"  Rotating Video 2 by {angle_to_rotate_v2:.2f}° to match Video 1's tilt.")
+
+        # Rotate video 2
+        create_tilted_video(video2_path, output_video2_path, angle_to_rotate_v2)
+        
+        # Copy video 1 as is
+        print(f"  Copying Video 1 to {output_video1_path} without rotation.")
+        shutil.copy(video1_path, output_video1_path)
+        print("  -> Tilt alignment process complete.")
+    else:
+        print("  Could not perform tilt alignment: failed to determine tilt angle for one or both videos.")
+
 if __name__ == '__main__':
     # --- Example Usage ---
     # Replace with the actual paths to your video files.
     # These videos should be trimmed to the relevant motion (e.g., using util_auto_pitch_cut.py).
-    video1_path = "Input_Video/cutsIMG_2726.mp4"
-    video2_path = "Input_Video/cutsIMG_2727.mp4"
+    video1_path = "Input_Video/cutsIMG_1889.mp4"
+    video2_path = "Test_Video/cutsIMG_1889_n6.mp4"
     
     if not (os.path.exists(video1_path) and os.path.exists(video2_path)):
         print("Error: Please update the video paths in the __main__ block of func_tilt_alignment.py.")
     else:
         compare_video_tilts(video1_path, video2_path)
+        # To perform tilt alignment and save the output videos, uncomment the following lines:
+        output_video1_path = "Output_Overlay/tilt_aligned_video1.mp4"
+        output_video2_path = "Output_Overlay/tilt_aligned_video2.mp4"
+        tilt_align_videos(video1_path, video2_path, output_video1_path, output_video2_path)   
