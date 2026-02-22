@@ -208,6 +208,10 @@ def tilt_align_videos(video1_path: str, video2_path: str, output_video1_path: st
         print("  -> Tilt alignment process complete.")
     else:
         print("  Could not perform tilt alignment: failed to determine tilt angle for one or both videos.")
+        print(f"  Copying Video 1 to {output_video1_path} without rotation.")
+        shutil.copy(video1_path, output_video1_path)
+        print(f"  Copying Video 2 to {output_video2_path} without rotation.")
+        shutil.copy(video2_path, output_video2_path)
 
 if __name__ == '__main__':
     # --- Example Usage ---
