@@ -19,9 +19,9 @@ def generate_motion_data(frames, width, height):
               'dx' and 'dy' translation for a corresponding frame.
     """
     motion_data = []
-    # Generate smooth, looping motion using sine and cosine functions
+    # Generate smooth, looping motion using sine function
     x_translation = 20 * np.sin(np.linspace(0, 2 * np.pi, frames))
-    y_translation = 10 * np.cos(np.linspace(0, 2 * np.pi, frames))
+    y_translation = 20 * np.sin(np.linspace(0, 4 * np.pi, frames)) # Different frequency for y to create more complex motion
 
     for i in range(frames):
         dx = x_translation[i]
