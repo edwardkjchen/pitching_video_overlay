@@ -2,6 +2,7 @@
 *.csv
 *.png
 *.mkv
+*.MOV
 .venv/*
 __pycache__/*
 cuts/*
@@ -11,3 +12,4 @@ Old_code/*
 Output_Overlay/*
 raw/*
 Test_Video/*
+processed/*
