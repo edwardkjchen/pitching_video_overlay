@@ -5,7 +5,7 @@ from scipy.signal import savgol_filter
 import argparse
 import sys
 
-def stabilize_video(input_path, output_path, raw_motion_csv_path, smoothed_motion_csv_path):
+def stabilize_video(input_path, output_path, raw_motion_csv_path, smoothed_motion_csv_path, debug=False):
     """
     Stabilizes a video by estimating and correcting camera motion.
     This version uses Gaussian blur, RANSAC, and a Savitzky-Golay filter
@@ -29,8 +29,8 @@ def stabilize_video(input_path, output_path, raw_motion_csv_path, smoothed_motio
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
     # === 2. Process Frames: Estimate Motion ===
-    # This list will store the estimated motion (dx, dy) between each frame
-    frame_motions = []
+    # Initialize with [0,0] for the first frame (no motion relative to itself)
+    frame_motions = [[0.0, 0.0]]
 
     # Reset capture to the first frame for motion estimation
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -42,7 +42,7 @@ def stabilize_video(input_path, output_path, raw_motion_csv_path, smoothed_motio
     prev_gray_for_motion = cv2.GaussianBlur(prev_gray_for_motion, (5, 5), 0)
 
 
-    # Loop through all frames to estimate inter-frame motion
+    # Loop through remaining frames to estimate inter-frame motion
     for i in range(n_frames - 1):
         ret, curr_frame_for_motion = cap.read()
         if not ret:
@@ -71,13 +71,42 @@ def stabilize_video(input_path, output_path, raw_motion_csv_path, smoothed_motio
 
             # Filter out points that were not successfully tracked
             idx = np.where(status == 1)[0]
-            prev_pts = prev_pts[idx]
-            curr_pts = curr_pts[idx]
+            good_prev_pts = prev_pts[idx]
+            good_curr_pts = curr_pts[idx]
+
+            # --- Outlier Filtering based on Vector Length ---
+            # Calculate lengths of all motion vectors
+            vectors = good_curr_pts - good_prev_pts
+            lengths = np.sqrt(np.sum(vectors**2, axis=2)).flatten()
+            
+            if len(lengths) > 0:
+                median_length = np.median(lengths)
+                # Eliminate vectors whose length is more than 2x the median length
+                # This removes tracking "jumps" or mismatches
+                valid_idx = np.where(lengths <= 2 * median_length)[0]
+                
+                good_prev_pts = good_prev_pts[valid_idx]
+                good_curr_pts = good_curr_pts[valid_idx]
+
+            if debug:
+                # Create a copy of the current frame to draw on
+                debug_frame = curr_frame_for_motion.copy()
+                # Draw the tracks
+                for j, (new, old) in enumerate(zip(good_curr_pts, good_prev_pts)):
+                    a, b = new.ravel()
+                    c, d = old.ravel()
+                    cv2.line(debug_frame, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
+                    cv2.circle(debug_frame, (int(a), int(b)), 5, (0, 0, 255), -1)
+                
+                cv2.imshow('Optical Flow Debug', debug_frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    debug = False # Stop showing if 'q' is pressed
+                    cv2.destroyWindow('Optical Flow Debug')
 
             # Estimate the affine transformation (translation, rotation, scale) using RANSAC.
             # RANSAC is robust to outliers (mismatched feature points).
-            if len(prev_pts) > 5:
-                transform_matrix, _ = cv2.estimateAffinePartial2D(prev_pts, curr_pts)
+            if len(good_prev_pts) > 5:
+                transform_matrix, _ = cv2.estimateAffinePartial2D(good_prev_pts, good_curr_pts)
 
                 if transform_matrix is not None:
                     # Extract the translation components (dx, dy) from the transformation matrix
@@ -91,6 +120,9 @@ def stabilize_video(input_path, output_path, raw_motion_csv_path, smoothed_motio
         frame_motions.append([dx, dy])
         # Set the current frame's grayscale image as the previous one for the next iteration
         prev_gray_for_motion = curr_gray_for_motion
+    
+    if debug:
+        cv2.destroyAllWindows()
 
     # === 3. Calculate Smoothed Trajectory ===
     # Convert the list of motions to a NumPy array for numerical operations
@@ -99,7 +131,7 @@ def stabilize_video(input_path, output_path, raw_motion_csv_path, smoothed_motio
     # Apply a Savitzky-Golay filter to smooth the raw motion data.
     # This filter fits a polynomial to a window of data points, which helps to
     # remove jitter while preserving the overall motion trend.
-    window_length = 31 # The length of the filter window (must be an odd number)
+    window_length = 15 # The length of the filter window (must be an odd number)
     polyorder = 3      # The order of the polynomial used to fit the samples
     smoothed_motions_np = np.copy(frame_motions_np)
     smoothed_motions_np[:, 0] = savgol_filter(frame_motions_np[:, 0], window_length, polyorder)
@@ -113,10 +145,6 @@ def stabilize_video(input_path, output_path, raw_motion_csv_path, smoothed_motio
     # === 5. Apply Accumulated Transformations ===
     # Reset the video stream to the first frame to apply the stabilization
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    ret, prev_frame_stabilized = cap.read()
-    if not ret: return # Exit if the first frame cannot be read
-    # The first frame is the reference, so write it to the output without transformation
-    out.write(prev_frame_stabilized) 
 
     # Loop through the trajectory data to apply the transformation to each frame
     for i in range(len(trajectory)):
@@ -167,10 +195,12 @@ if __name__ == "__main__":
         parser = argparse.ArgumentParser(description='Stabilize a video file.')
         parser.add_argument('input_path', type=str, help='Path to the input video file.')
         parser.add_argument('output_path', type=str, help='Path to save the stabilized video.')
+        parser.add_argument('--debug', action='store_true', help='Show optical flow debug visualization.')
         args = parser.parse_args()
 
-        stabilize_video(args.input_path, args.output_path, 'calculated_motion_raw.csv', 'calculated_motion_smoothed.csv')
+        stabilize_video(args.input_path, args.output_path, 'calculated_motion_raw.csv', 'calculated_motion_smoothed.csv', debug=args.debug)
     else:
         print("No command line arguments provided. Running a test stabilization...")
-        stabilize_video("Input_Video\cutsIMG_2725.mp4", "stabilized_test_video_2725.mp4", 'calculated_motion_raw_2725.csv', 'calculated_motion_smoothed_2725.csv')
-        stabilize_video("Input_Video\cutsIMG_2726.mp4", "stabilized_test_video_2726.mp4", 'calculated_motion_raw_2726.csv', 'calculated_motion_smoothed_2726.csv')
+        # Note: You can add --debug here manually if you want to test it without CLI args
+        stabilize_video("Input_Video\\cutsIMG_2725.mp4", "stabilized_test_video_2725.mp4", 'calculated_motion_raw_2725.csv', 'calculated_motion_smoothed_2725.csv', debug=True)
+        stabilize_video("Input_Video\\cutsIMG_2726.mp4", "stabilized_test_video_2726.mp4", 'calculated_motion_raw_2726.csv', 'calculated_motion_smoothed_2726.csv', debug=True)
