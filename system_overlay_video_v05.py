@@ -219,8 +219,8 @@ def main():
 
         # Step 5: Temporal Alignment
         print("\nStep 5: Starting temporal alignment...")
-        # Use original videos for alignment to avoid stabilization/scaling artifacts
-        frame_shift = temporal_align_videos(video1_path, video2_path)
+        # Use tilt-aligned videos for temporal alignment to avoid stabilization/scaling/tilting artifacts
+        frame_shift = temporal_align_videos(tilt_aligned1_path, tilt_aligned2_path)
         frame_shift = int(round(frame_shift))
         print(f"Temporal alignment complete. Frame shift: {frame_shift}")
 
