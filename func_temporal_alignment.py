@@ -28,9 +28,40 @@ def _max_by_overlapping_histogram(data, error_bound):
     max_centers = [center for center, count in zip(centers, counts) if count == max_count]
     return np.mean(max_centers) if max_centers else 0
 
+import cv2
+import mediapipe as mp
+import numpy as np
+import pandas as pd
+from collections import deque
+from fastdtw import fastdtw
+from scipy.spatial.distance import euclidean
+import bisect
+import matplotlib.pyplot as plt
+import os
+
+def _median_mean(data):
+    """Calculates the mean of the central 50% of the sorted data."""
+    sorted_data = sorted(data)
+    mid_index = len(sorted_data) // 4
+    mid_data = sorted_data[mid_index:-mid_index]
+    return np.mean(mid_data) if mid_data else 0
+
+def _max_by_overlapping_histogram(data, error_bound):
+    """Finds the value with the highest density in a 1D dataset."""
+    if not data:
+        return 0
+    data_sorted = sorted(data)
+    min_val, max_val = data_sorted[0], data_sorted[-1]
+    centers = range(int(min_val), int(max_val) + 1)
+    counts = [bisect.bisect_right(data_sorted, center + error_bound) - bisect.bisect_left(data_sorted, center - error_bound) for center in centers]
+    max_count = max(counts)
+    max_centers = [center for center, count in zip(centers, counts) if count == max_count]
+    return np.mean(max_centers) if max_centers else 0
+
 def extract_pose_features(video_path: str, model_complexity: int = 2, denoise_window: int = 5):
     """
-    Processes a video to extract pose landmarks, their speeds, and leg length measurements.
+    Processes a video to extract pose landmarks and their speeds.
+    Assumes videos are already scaled to the same size.
 
     Args:
         video_path (str): Path to the input video file.
@@ -38,9 +69,7 @@ def extract_pose_features(video_path: str, model_complexity: int = 2, denoise_wi
         denoise_window (int): Size of the sliding window for landmark smoothing.
 
     Returns:
-        A tuple containing:
-        - pd.DataFrame: DataFrame with joint speeds and knee-to-heel length for each frame.
-        - float: The median of the knee-to-heel lengths, used for scaling.
+        pd.DataFrame: DataFrame with joint speeds for each frame.
     """
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(static_image_mode=False,
@@ -60,6 +89,14 @@ def extract_pose_features(video_path: str, model_complexity: int = 2, denoise_wi
     
     all_features = []
 
+    # Subset of landmarks to use for alignment
+    landmark_subset = {
+        'RIGHT_WRIST': mp_pose.PoseLandmark.RIGHT_WRIST,
+        'RIGHT_HEEL': mp_pose.PoseLandmark.RIGHT_HEEL,
+        'LEFT_KNEE': mp_pose.PoseLandmark.LEFT_KNEE,
+        'LEFT_HEEL': mp_pose.PoseLandmark.LEFT_HEEL
+    }
+
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -75,25 +112,13 @@ def extract_pose_features(video_path: str, model_complexity: int = 2, denoise_wi
             
             frame_features = {}
             if prev_landmarks is not None:
-                # Calculate speeds for selected joints
-                for joint_name, landmark_enum in mp_pose.PoseLandmark.__members__.items():
-                    if 'HIP' in joint_name or 'KNEE' in joint_name or 'WRIST' in joint_name or 'TOE' in joint_name or 'FOOT_INDEX' in joint_name:
-                        idx = landmark_enum.value
-                        horizontal_speed = (smoothed_landmarks[idx, 0] - prev_landmarks[idx, 0]) * frame_width
-                        vertical_speed = (smoothed_landmarks[idx, 1] - prev_landmarks[idx, 1]) * frame_height
-                        frame_features[f'{joint_name}_h_speed'] = horizontal_speed
-                        frame_features[f'{joint_name}_v_speed'] = vertical_speed
-                
-                # Calculate knee-to-heel distance
-                left_knee = smoothed_landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value]
-                left_heel = smoothed_landmarks[mp_pose.PoseLandmark.LEFT_HEEL.value]
-                right_knee = smoothed_landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value]
-                right_heel = smoothed_landmarks[mp_pose.PoseLandmark.RIGHT_HEEL.value]
-                
-                left_dist = np.linalg.norm(left_knee - left_heel) * frame_width
-                right_dist = np.linalg.norm(right_knee - right_heel) * frame_width
-                avg_leg_length = (left_dist + right_dist) / 2
-                frame_features['knee_to_heel_length'] = avg_leg_length
+                # Calculate speeds for selected joints in the subset
+                for joint_name, landmark_enum in landmark_subset.items():
+                    idx = landmark_enum.value
+                    horizontal_speed = (smoothed_landmarks[idx, 0] - prev_landmarks[idx, 0]) * frame_width
+                    vertical_speed = (smoothed_landmarks[idx, 1] - prev_landmarks[idx, 1]) * frame_height
+                    frame_features[f'{joint_name}_h_speed'] = horizontal_speed
+                    frame_features[f'{joint_name}_v_speed'] = vertical_speed
                 
                 all_features.append(frame_features)
 
@@ -108,27 +133,26 @@ def extract_pose_features(video_path: str, model_complexity: int = 2, denoise_wi
     pose.close()
 
     if not all_features:
-        return pd.DataFrame(), 0
+        return pd.DataFrame()
 
     df = pd.DataFrame(all_features).fillna(0)
-    median_length = df["knee_to_heel_length"].median()
-    
-    return df, median_length
+    return df
 
 
-def align_features_dtw(features1: pd.DataFrame, median_length1: float,
-                       features2: pd.DataFrame, median_length2: float,
-                       framerate1: float, framerate2: float):
+def align_features_dtw(features1: pd.DataFrame, features2: pd.DataFrame,
+                       framerate1: float, framerate2: float,
+                       video_name1: str = "Video 1", video_name2: str = "Video 2"):
     """
     Aligns two feature series using Dynamic Time Warping (DTW) and computes the time shift.
+    Also plots joint speeds and DTW shifts.
 
     Args:
         features1 (pd.DataFrame): Feature data for the first video.
-        median_length1 (float): Median leg length for scaling reference.
         features2 (pd.DataFrame): Feature data for the second video.
-        median_length2 (float): Median leg length for scaling.
         framerate1 (float): Framerate of the first video.
         framerate2 (float): Framerate of the second video.
+        video_name1 (str): Label for the first video in plots.
+        video_name2 (str): Label for the second video in plots.
 
     Returns:
         float: The estimated time shift in frames.
@@ -141,51 +165,82 @@ def align_features_dtw(features1: pd.DataFrame, median_length1: float,
     data1 = features1[common_columns].to_numpy()
     data2 = features2[common_columns].to_numpy()
 
-    # Rescale data2 to match the scale of data1
-    scale_factor = (median_length1 / median_length2) if median_length2 > 0 else 1
+    # Assuming videos are already scaled, we don't apply median_length scaling.
+    # We still handle framerate differences if necessary.
     framerate_ratio = framerate1 / framerate2
-    
-    data2_rescaled = data2 * scale_factor * framerate_ratio
+    data2_ready = data2 * framerate_ratio
+    data1_ready = data1
 
-    # Handle framerate differences by simple interpolation (doubling rows)
+    # Simple interpolation for different framerates
     if framerate1 == framerate2 * 2:
-        new_shape = (data2_rescaled.shape[0] * 2 - 1, data2_rescaled.shape[1])
-        data2_ready = np.empty(new_shape)
-        data2_ready[::2] = data2_rescaled
-        data2_ready[1::2] = (data2_rescaled[:-1] + data2_rescaled[1:]) / 2
-        data1_ready = data1
+        new_shape = (data2_ready.shape[0] * 2 - 1, data2_ready.shape[1])
+        data2_interp = np.empty(new_shape)
+        data2_interp[::2] = data2_ready
+        data2_interp[1::2] = (data2_ready[:-1] + data2_ready[1:]) / 2
+        data2_ready = data2_interp
     elif framerate2 == framerate1 * 2:
         new_shape = (data1.shape[0] * 2 - 1, data1.shape[1])
-        data1_ready = np.empty(new_shape)
-        data1_ready[::2] = data1
-        data1_ready[1::2] = (data1[:-1] + data1[1:]) / 2
-        data2_ready = data2_rescaled
-    else: # Assuming same framerate
-        data1_ready, data2_ready = data1, data2_rescaled
+        data1_interp = np.empty(new_shape)
+        data1_interp[::2] = data1
+        data1_interp[1::2] = (data1[:-1] + data1[1:]) / 2
+        data1_ready = data1_interp
         
     distance, best_path = fastdtw(data1_ready, data2_ready, dist=euclidean)
     
     shifts_per_frame = [p2 - p1 for p1, p2 in best_path]
     
+    # --- Plotting ---
+    output_dir = "Alignment_Plots"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
     # Choose a robust shift estimation method
     time_shift = _max_by_overlapping_histogram(shifts_per_frame, error_bound=1)
+
+    # Plotting Helper for Individual Joint Speeds
+    def plot_video_speeds(features_df, video_name):
+        plt.figure(figsize=(12, 6))
+        # Filter to specific requested components for visual clarity
+        desired_columns = ['RIGHT_WRIST_h_speed', 'LEFT_KNEE_v_speed', 'LEFT_HEEL_v_speed', 'LEFT_HEEL_h_speed']
+        for col in desired_columns:
+            if col in features_df.columns:
+                plt.plot(features_df[col], label=col, alpha=0.8)
+        plt.title(f'Target Joint Speeds: {video_name}')
+        plt.xlabel('Frame Number')
+        plt.ylabel('Speed (px/frame)')
+        plt.ylim(-200, 200) # Fixed y-axis for consistent scale
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.tight_layout()
+        plot_path = os.path.join(output_dir, f"joint_speeds_{video_name}.png".replace("/", "_").replace("\\", "_"))
+        plt.savefig(plot_path)
+        print(f"Joint speed plot saved to {plot_path}")
+        plt.close()
+
+    # Output individual plots per video
+    plot_video_speeds(features1, video_name1)
+    plot_video_speeds(features2, video_name2)
+
+    # Plot 2: DTW Shifts per frame with the final time_shift as a reference line
+    plt.figure(figsize=(12, 6))
+    plt.plot(shifts_per_frame, label='Warping Path Shift (idx2 - idx1)', color='tab:blue', alpha=0.6)
+    plt.axhline(y=time_shift, color='red', linestyle='--', linewidth=2, label=f'Calculated Time Shift: {time_shift:.2f}')
+    
+    plt.title(f'DTW Alignment Path: {video_name1} vs {video_name2}')
+    plt.xlabel('Step in Alignment Path')
+    plt.ylabel('Shift (Frame2_idx - Frame1_idx)')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    shift_plot_path = os.path.join(output_dir, f"dtw_shifts_{video_name1}_{video_name2}.png".replace("/", "_").replace("\\", "_"))
+    plt.savefig(shift_plot_path)
+    print(f"DTW shift plot saved to {shift_plot_path}")
+    plt.close()
     
     return time_shift
 
 def temporal_align_videos(video_path1: str, video_path2: str, **kwargs):
     """
     Temporally aligns two videos by finding the optimal time shift between them.
-
-    This function processes both videos to extract pose motion features, then uses
-    Dynamic Time Warping (DTW) to find the alignment path and calculate the shift.
-
-    Args:
-        video_path1 (str): Path to the first video.
-        video_path2 (str): Path to the second video.
-        **kwargs: Optional arguments for `extract_pose_features`.
-
-    Returns:
-        float: The time shift in frames (video2 is shifted by this amount relative to video1).
     """
     cap1 = cv2.VideoCapture(video_path1)
     framerate1 = cap1.get(cv2.CAP_PROP_FPS)
@@ -195,14 +250,17 @@ def temporal_align_videos(video_path1: str, video_path2: str, **kwargs):
     framerate2 = cap2.get(cv2.CAP_PROP_FPS)
     cap2.release()
     
-    print("Extracting features from the first video...")
-    features1, median_length1 = extract_pose_features(video_path1, **kwargs)
+    name1 = os.path.basename(video_path1)
+    name2 = os.path.basename(video_path2)
+
+    print(f"Extracting features from {name1}...")
+    features1 = extract_pose_features(video_path1, **kwargs)
     
-    print("Extracting features from the second video...")
-    features2, median_length2 = extract_pose_features(video_path2, **kwargs)
+    print(f"Extracting features from {name2}...")
+    features2 = extract_pose_features(video_path2, **kwargs)
     
     print("Aligning features using DTW...")
-    time_shift = align_features_dtw(features1, median_length1, features2, median_length2, framerate1, framerate2)
+    time_shift = align_features_dtw(features1, features2, framerate1, framerate2, name1, name2)
     
     return time_shift
 
@@ -212,24 +270,30 @@ if __name__ == '__main__':
     # For instance:
     # video1 = 'Input_Video/seq7p_8_0.mp4'
     # video2 = 'Input_Video/seqmlb60r_bh_1_0.mp4'
-    video1_path = "Input_Video/cutsIMG_2725.mp4"
-    video2_path = "Input_Video/cutsIMG_2726.mp4"
+    # video1_path = "Input_Video/cutsIMG_1922.mp4"
+    # video2_path = "Input_Video/cutsIMG_1923.mp4"
 
-    # Since I cannot assume files exist, this part is commented out.
-    # try:
-    #     shift = temporal_align_videos(video1, video2)
-    #     print(f"\nEstimated time shift: {shift:.2f} frames.")
-    #     print(f"This means video2 should be shifted by {shift / 30:.2f} seconds if at 30 FPS.")
-    # except (IOError, FileNotFoundError) as e:
-    #     print(f"Error: {e}. Please ensure video paths are correct.")
-    # except Exception as e:
-    #     print(f"An unexpected error occurred: {e}")
-    try:
-        print(f"Attempting to align '{video1_path}' and '{video2_path}'...")
-        shift = temporal_align_videos(video1_path, video2_path)
-        print(f"\nEstimated time shift: {shift:.2f} frames.")
+    input_dir = "Input_Video"
 
-    except (IOError, FileNotFoundError) as e:
-        print(f"Error: {e}. Please ensure video paths are correct and the videos exist.")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+    # Get all video files in the input directory
+    video_files = [f for f in os.listdir(input_dir) if f.endswith(('.mp4', '.avi', '.mov'))]
+    video_files = ['cutsIMG_1899.mp4', 'cutsIMG_1902.mp4']
+    video_files.sort()
+    
+    # Process all pairs of videos
+    for i in range(len(video_files) - 1):
+        video1_name = video_files[i]
+        video2_name = video_files[i + 1]
+        
+        video1_path = os.path.join(input_dir, video1_name)
+        video2_path = os.path.join(input_dir, video2_name)
+
+        try:
+            print(f"Attempting to align '{video1_path}' and '{video2_path}'...")
+            shift = temporal_align_videos(video1_path, video2_path)
+            print(f"\nEstimated time shift: {shift:.2f} frames.")
+
+        except (IOError, FileNotFoundError) as e:
+            print(f"Error: {e}. Please ensure video paths are correct and the videos exist.")
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
